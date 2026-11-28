@@ -15,9 +15,9 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.util.Locale
 
 /**
  * Foreground service that pushes a fixed location into Android's test
@@ -49,33 +49,43 @@ class MockLocationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        lat = intent?.getDoubleExtra(EXTRA_LAT, lat) ?: lat
-        lon = intent?.getDoubleExtra(EXTRA_LON, lon) ?: lon
-
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            } else {
-                0
-            }
-        )
-
-        if (!registerProviders()) {
-            Toast.makeText(
-                this,
-                "Select this app under Developer options > Select mock location app",
-                Toast.LENGTH_LONG
-            ).show()
+        // Stop request from the notification button.
+        if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
         }
 
+        lat = intent?.getDoubleExtra(EXTRA_LAT, lat) ?: lat
+        lon = intent?.getDoubleExtra(EXTRA_LON, lon) ?: lon
+
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                } else {
+                    0
+                }
+            )
+        } catch (e: Exception) {
+            fail(Failure.COULD_NOT_START)
+            return START_NOT_STICKY
+        }
+
+        if (!registerProviders()) {
+            fail(Failure.NOT_MOCK_APP)
+            return START_NOT_STICKY
+        }
+
+        lastFailure = null
+        currentLat = lat
+        currentLon = lon
         isRunning = true
         handler.removeCallbacks(tick)
         handler.post(tick)
+        notifyStateChanged()
         return START_NOT_STICKY
     }
 
@@ -91,7 +101,13 @@ class MockLocationService : Service() {
         }
         activeProviders.clear()
         isRunning = false
+        notifyStateChanged()
         super.onDestroy()
+    }
+
+    private fun fail(reason: Failure) {
+        lastFailure = reason
+        stopSelf()
     }
 
     /** Returns false if this app is not the selected mock location app. */
@@ -143,7 +159,7 @@ class MockLocationService : Service() {
                 locationManager.setTestProviderLocation(provider, location)
             } catch (e: Exception) {
                 // Mock app selection was revoked while running.
-                stopSelf()
+                fail(Failure.NOT_MOCK_APP)
                 return
             }
         }
@@ -160,18 +176,28 @@ class MockLocationService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, MockLocationService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("Mock location active")
-            .setContentText(String.format(java.util.Locale.US, "%.6f, %.6f", lat, lon))
+            .setContentTitle("Mock location is ON")
+            .setContentText(String.format(Locale.US, "%.6f, %.6f", lat, lon))
             .setContentIntent(openApp)
+            .addAction(android.R.drawable.ic_media_pause, "STOP", stop)
             .setOngoing(true)
             .build()
     }
 
+    enum class Failure { NOT_MOCK_APP, COULD_NOT_START }
+
     companion object {
         const val EXTRA_LAT = "lat"
         const val EXTRA_LON = "lon"
+        const val ACTION_STOP = "com.diego.mocklocation.STOP"
         private const val CHANNEL_ID = "mock_location"
         private const val NOTIFICATION_ID = 1
         private const val UPDATE_INTERVAL_MS = 1000L
@@ -179,5 +205,25 @@ class MockLocationService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /** The point currently being sent, valid while [isRunning] is true. */
+        @Volatile
+        var currentLat = 0.0
+            private set
+
+        @Volatile
+        var currentLon = 0.0
+            private set
+
+        /** Why the last start attempt failed. The activity reads and clears this. */
+        @Volatile
+        var lastFailure: Failure? = null
+
+        /** Set by the activity while it is visible; called on the main thread. */
+        var stateListener: (() -> Unit)? = null
+
+        private fun notifyStateChanged() {
+            stateListener?.invoke()
+        }
     }
 }

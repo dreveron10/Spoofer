@@ -17,11 +17,13 @@ It uses Android's official test provider API (no root).
 
 ## Use
 
+- The bar at the top shows the state: green ACTIVE with the coordinates being sent, or gray OFF.
 - Tap the map, or type coordinates and press Go, to pick a point.
-- Start begins feeding that point to the GPS and network providers once per second.
-- Press Start again after picking a new point to move.
-- Stop removes the test providers and returns the phone to real location.
-- Save stores the current point; Spots lists saved points to load or delete.
+- The big button is START when off and STOP when on.
+- To move while active, pick a new point, press STOP, then START.
+- The notification also has a STOP button, so you can end it without opening the app.
+- Save this spot stores the current point; Saved spots lists them to load or delete.
+- If the app is not selected as the mock location app, START shows a prompt that opens Developer options.
 
 ## Notes
 

@@ -3,8 +3,11 @@ package com.diego.mocklocation
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -28,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var latInput: EditText
     private lateinit var lonInput: EditText
     private lateinit var status: TextView
+    private lateinit var toggleButton: Button
     private lateinit var favorites: FavoritesStore
     private var marker: Marker? = null
 
@@ -45,6 +49,7 @@ class MainActivity : AppCompatActivity() {
         latInput = findViewById(R.id.latInput)
         lonInput = findViewById(R.id.lonInput)
         status = findViewById(R.id.status)
+        toggleButton = findViewById(R.id.toggleButton)
 
         map.setTileSource(TileSourceFactory.MAPNIK)
         map.setMultiTouchControls(true)
@@ -64,13 +69,19 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.goButton).setOnClickListener {
             readInputs()?.let { (lat, lon) -> setPoint(lat, lon, recenter = true) }
         }
-        findViewById<Button>(R.id.startButton).setOnClickListener { startMocking() }
-        findViewById<Button>(R.id.stopButton).setOnClickListener { stopMocking() }
+        toggleButton.setOnClickListener {
+            if (MockLocationService.isRunning) stopMocking() else startMocking()
+        }
         findViewById<Button>(R.id.saveButton).setOnClickListener { saveFavorite() }
         findViewById<Button>(R.id.favoritesButton).setOnClickListener { showFavorites() }
 
-        // Preselect the default point so Start works without picking anything.
-        setPoint(DEFAULT_LAT, DEFAULT_LON, recenter = false)
+        // Preselect a point so START works without picking anything: the point
+        // being sent if mocking is already on, otherwise the default.
+        if (MockLocationService.isRunning) {
+            setPoint(MockLocationService.currentLat, MockLocationService.currentLon, recenter = true)
+        } else {
+            setPoint(DEFAULT_LAT, DEFAULT_LON, recenter = false)
+        }
 
         requestPermissionsIfNeeded()
     }
@@ -78,12 +89,71 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         map.onResume()
-        refreshStatus()
+        MockLocationService.stateListener = { onServiceStateChanged() }
+        onServiceStateChanged()
     }
 
     override fun onPause() {
+        MockLocationService.stateListener = null
         map.onPause()
         super.onPause()
+    }
+
+    /** Called whenever the service starts, stops, or fails to start. */
+    private fun onServiceStateChanged() {
+        refreshStatus()
+        val failure = MockLocationService.lastFailure ?: return
+        MockLocationService.lastFailure = null
+        when (failure) {
+            MockLocationService.Failure.NOT_MOCK_APP -> showSelectMockAppDialog()
+            MockLocationService.Failure.COULD_NOT_START ->
+                toast("Could not start. Check that location permission is allowed.")
+        }
+    }
+
+    private fun refreshStatus() {
+        if (MockLocationService.isRunning) {
+            status.text = String.format(
+                Locale.US,
+                "ACTIVE  %.6f, %.6f",
+                MockLocationService.currentLat,
+                MockLocationService.currentLon
+            )
+            status.setBackgroundColor(COLOR_ON)
+            toggleButton.text = "STOP"
+            toggleButton.backgroundTintList = ColorStateList.valueOf(COLOR_STOP)
+        } else {
+            status.text = "OFF  (using real location)"
+            status.setBackgroundColor(COLOR_OFF)
+            toggleButton.text = "START"
+            toggleButton.backgroundTintList = ColorStateList.valueOf(COLOR_ON)
+        }
+    }
+
+    private fun showSelectMockAppDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("One setup step needed")
+            .setMessage(
+                "This app is not selected as the mock location app.\n\n" +
+                    "Open Developer options, tap \"Select mock location app\", " +
+                    "and choose Mock Location. Then come back and press START."
+            )
+            .setPositiveButton("Open Developer options") { _, _ -> openDeveloperOptions() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openDeveloperOptions() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+        } catch (e: Exception) {
+            toast("Enable Developer options first: Settings > About phone > tap Build number 7 times")
+            try {
+                startActivity(Intent(Settings.ACTION_DEVICE_INFO_SETTINGS))
+            } catch (e2: Exception) {
+                // No matching settings screen on this device.
+            }
+        }
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -148,22 +218,16 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, MockLocationService::class.java)
             .putExtra(MockLocationService.EXTRA_LAT, lat)
             .putExtra(MockLocationService.EXTRA_LON, lon)
-        ContextCompat.startForegroundService(this, intent)
-        // The service starts asynchronously, so check its real state shortly after.
-        status.postDelayed({ refreshStatus() }, 500)
+        try {
+            ContextCompat.startForegroundService(this, intent)
+        } catch (e: Exception) {
+            toast("Could not start the mock location service")
+        }
+        // The service reports back through stateListener once it is running.
     }
 
     private fun stopMocking() {
         stopService(Intent(this, MockLocationService::class.java))
-        status.postDelayed({ refreshStatus() }, 300)
-    }
-
-    private fun refreshStatus() {
-        status.text = if (MockLocationService.isRunning) {
-            "Mocking active. Press Start again to move to a new point."
-        } else {
-            "Stopped. Tap the map to pick a point."
-        }
     }
 
     private fun saveFavorite() {
@@ -222,5 +286,9 @@ class MainActivity : AppCompatActivity() {
         // Default point: Antonio Lucchetti building (Mechanical Engineering), UPRM.
         const val DEFAULT_LAT = 18.218075
         const val DEFAULT_LON = -67.143258
+
+        val COLOR_ON = Color.parseColor("#2E7D32")
+        val COLOR_STOP = Color.parseColor("#C62828")
+        val COLOR_OFF = Color.parseColor("#616161")
     }
 }
